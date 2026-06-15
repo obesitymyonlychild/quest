@@ -1,0 +1,32 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  margin: 0;
+  padding: 0;
+  min-height: 100vh;
+  background-color: #000000;
+  color: #f3f4f6;
+  font-family: 'Courier New', Courier, monospace;
+}
+
+.glow-coral {
+  text-shadow: 0 0 10px rgba(255, 107, 107, 0.5);
+}
+
+.glow-amber {
+  text-shadow: 0 0 10px rgba(255, 167, 38, 0.5);
+}
+
+.glow-teal {
+  text-shadow: 0 0 10px rgba(38, 198, 218, 0.5);
+}
+
+.glow-purple {
+  text-shadow: 0 0 10px rgba(171, 71, 188, 0.5);
+}
+
+.glow-blue {
+  text-shadow: 0 0 10px rgba(66, 165, 245, 0.5);
+}
