@@ -1,5 +1,23 @@
 import { Quest, CampsiteState } from '../types';
 
+// Neon palette accents for each campsite state (see tailwind.config.js).
+export const STATE_COLORS: Record<CampsiteState, string> = {
+  FRESH: '#26C6DA',
+  ACTIVE: '#26C6DA',
+  STALLING: '#FFA726',
+  BEHIND: '#FF6B6B',
+  JUST_COMPLETED: '#AB47BC',
+};
+
+export function isReadyToDeliver(quest: Quest): boolean {
+  return quest.steps.length > 0 && quest.steps.every(s => s.completed) && !quest.deliveredAt;
+}
+
+// A quest demands attention when it's ready to collect or sliding behind.
+export function needsAttention(quest: Quest): boolean {
+  return isReadyToDeliver(quest) || getCampsiteState(quest) === 'BEHIND';
+}
+
 export function getCampsiteState(quest: Quest | null): CampsiteState {
   if (!quest) return 'ACTIVE'; // no quest = relaxed default
 

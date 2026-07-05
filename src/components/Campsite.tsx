@@ -1,16 +1,19 @@
 import { useEffect, useRef, useState } from 'react';
 import { Application, Container, Graphics, Text } from 'pixi.js';
-import { Quest } from '../types';
-import { getCampsiteState } from '../lib/campsite';
+import { Quest, Companion } from '../types';
+import { getCampsiteState, isReadyToDeliver, needsAttention, STATE_COLORS } from '../lib/campsite';
 import StepSheet from './StepSheet';
-import { saveQuest } from '../lib/storage';
-import gsap from 'gsap';
+import InventorySheet from './InventorySheet';
+import { upsertQuest, grantNextUnlock, loadOwnedCompanions } from '../lib/storage';
 
 interface CampsiteProps {
   quest: Quest | null;
+  quests: Quest[];
   onQuestUpdate: (quest: Quest) => void;
+  onSelectQuest: (id: string) => void;
+  onDeliverQuest: (id: string) => void;
   onBackToChat: () => void;
-  onDeleteQuest: () => void;
+  onDeleteQuest: (id: string) => void;
 }
 
 interface Particle {
@@ -22,7 +25,10 @@ interface Particle {
 
 export default function Campsite({
   quest,
+  quests,
   onQuestUpdate,
+  onSelectQuest,
+  onDeliverQuest,
   onBackToChat,
   onDeleteQuest
 }: CampsiteProps) {
@@ -31,9 +37,14 @@ export default function Campsite({
   const particlesRef = useRef<Particle[]>([]);
   const particleContainerRef = useRef<Container | null>(null);
   const [isSheetOpen, setIsSheetOpen] = useState(false);
+  const [isInventoryOpen, setIsInventoryOpen] = useState(false);
+  const [unlockToast, setUnlockToast] = useState<Companion | null>(null);
+  const [ownedCompanions, setOwnedCompanions] = useState<Companion[]>(() => loadOwnedCompanions());
   const [showDevPanel, setShowDevPanel] = useState(false);
 
   const campsiteState = getCampsiteState(quest);
+  const activeQuests = quests.filter(q => !q.deliveredAt);
+  const attentionCount = activeQuests.filter(needsAttention).length;
 
   // Particle burst trigger function
   const triggerParticleBurst = (x?: number, y?: number) => {
@@ -175,6 +186,29 @@ export default function Campsite({
       pinLabel.y = (app.screen.height / 3) * 2 + 150;
       layers.ground.addChild(pinLabel);
 
+      // Backpack pin (opens the inventory) — mirrors the quest pin pattern
+      const backpackPin = new Graphics();
+      backpackPin.circle(0, 0, 26);
+      backpackPin.fill(0xfbbf24); // amber, distinct from the teal quest pin
+      backpackPin.x = app.screen.width / 2 + 120;
+      backpackPin.y = (app.screen.height / 3) * 2 + 100;
+      backpackPin.eventMode = 'static';
+      backpackPin.cursor = 'pointer';
+      backpackPin.on('pointerdown', () => {
+        setIsSheetOpen(false);
+        setIsInventoryOpen(true);
+      });
+      layers.ground.addChild(backpackPin);
+
+      const backpackLabel = new Text({
+        text: 'Inventory (tap)',
+        style: { fill: 0xffffff, fontSize: 12 }
+      });
+      backpackLabel.anchor.set(0.5);
+      backpackLabel.x = app.screen.width / 2 + 120;
+      backpackLabel.y = (app.screen.height / 3) * 2 + 150;
+      layers.ground.addChild(backpackLabel);
+
       // Layer 4 - Characters placeholder
       const charBox = new Graphics();
       charBox.rect(app.screen.width / 2 - 60, (app.screen.height / 3) * 2 + 200, 50, 80);
@@ -268,6 +302,8 @@ export default function Campsite({
   // Dev panel keyboard shortcut
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement;
+      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT' || target.isContentEditable) return;
       if (e.shiftKey && e.key === 'D') {
         setShowDevPanel(prev => !prev);
       }
@@ -295,8 +331,17 @@ export default function Campsite({
       completedAt: allCompleted ? now : null
     };
 
-    saveQuest(updatedQuest);
+    upsertQuest(updatedQuest);
     onQuestUpdate(updatedQuest);
+
+    // Per-step reward: unlock the next companion (campsite progression)
+    const granted = grantNextUnlock();
+    if (granted) {
+      setOwnedCompanions(loadOwnedCompanions());
+      triggerParticleBurst();
+      setUnlockToast(granted);
+      setTimeout(() => setUnlockToast(null), 3500);
+    }
 
     // Close sheet briefly to show animation, then reopen if more steps remain
     setTimeout(() => {
@@ -304,6 +349,11 @@ export default function Campsite({
         setIsSheetOpen(true);
       }
     }, 500);
+  };
+
+  const handleQuestEdit = (updatedQuest: Quest) => {
+    upsertQuest(updatedQuest);
+    onQuestUpdate(updatedQuest);
   };
 
   const handleBlockerNote = (stepId: string, note: string) => {
@@ -320,7 +370,7 @@ export default function Campsite({
       steps: updatedSteps
     };
 
-    saveQuest(updatedQuest);
+    upsertQuest(updatedQuest);
     onQuestUpdate(updatedQuest);
   };
 
@@ -328,7 +378,7 @@ export default function Campsite({
     if (!quest) return;
 
     const now = new Date();
-    let updatedQuest = { ...quest };
+    const updatedQuest = { ...quest };
 
     switch (action) {
       case 'force-fresh':
@@ -368,7 +418,7 @@ export default function Campsite({
         break;
     }
 
-    saveQuest(updatedQuest);
+    upsertQuest(updatedQuest);
     onQuestUpdate(updatedQuest);
   };
 
@@ -387,11 +437,24 @@ export default function Campsite({
             Back to Chat
           </button>
           <button
-            onClick={onDeleteQuest}
-            className="px-4 py-2 bg-gray-800/90 text-gray-300 border border-gray-600 rounded hover:bg-red-900/90 hover:border-red-700 hover:text-red-200"
+            onClick={() => setIsInventoryOpen(true)}
+            className="relative px-4 py-2 bg-gray-800/90 text-amber border border-amber rounded hover:bg-gray-700/90"
           >
-            Delete Quest
+            Inventory
+            {attentionCount > 0 && (
+              <span className="absolute -top-2 -right-2 w-5 h-5 rounded-full bg-coral text-black text-xs font-bold flex items-center justify-center">
+                {attentionCount}
+              </span>
+            )}
           </button>
+          {quest && (
+            <button
+              onClick={() => onDeleteQuest(quest.id)}
+              className="px-4 py-2 bg-gray-800/90 text-gray-300 border border-gray-600 rounded hover:bg-red-900/90 hover:border-red-700 hover:text-red-200"
+            >
+              Delete Quest
+            </button>
+          )}
         </div>
         {quest && (
           <div className="bg-gray-800/90 text-gray-300 px-4 py-2 rounded border border-gray-600 pointer-events-auto">
@@ -401,6 +464,31 @@ export default function Campsite({
         )}
       </div>
 
+      {/* Quest switcher strip — only when juggling multiple quests */}
+      {activeQuests.length > 1 && (
+        <div className="absolute top-16 left-4 right-4 z-30 flex flex-wrap gap-2 pointer-events-none">
+          {activeQuests.map(q => {
+            const ready = isReadyToDeliver(q);
+            const color = ready ? '#FFA726' : STATE_COLORS[getCampsiteState(q)];
+            const selected = q.id === quest?.id;
+            return (
+              <button
+                key={q.id}
+                onClick={() => onSelectQuest(q.id)}
+                className={`pointer-events-auto px-3 py-1.5 rounded-full text-xs border bg-gray-900/90 hover:bg-gray-800/90 ${
+                  selected ? 'text-gray-100 font-bold' : 'text-gray-400'
+                }`}
+                style={{ borderColor: selected ? color : '#374151' }}
+                title={q.realTitle}
+              >
+                <span style={{ color }}>●</span> {q.title}
+                {ready && <span className="text-amber"> · ready</span>}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
       {/* Step Sheet */}
       {quest && (
         <StepSheet
@@ -409,8 +497,45 @@ export default function Campsite({
           onClose={() => setIsSheetOpen(false)}
           onStepComplete={handleStepComplete}
           onBlockerNote={handleBlockerNote}
+          onQuestEdit={handleQuestEdit}
           onParticleBurst={triggerParticleBurst}
         />
+      )}
+
+      {/* Inventory Sheet (always available) */}
+      <InventorySheet
+        quests={quests}
+        activeQuestId={quest?.id ?? null}
+        ownedCompanions={ownedCompanions}
+        isOpen={isInventoryOpen}
+        onClose={() => setIsInventoryOpen(false)}
+        onSelectQuest={(id) => {
+          onSelectQuest(id);
+          setIsInventoryOpen(false);
+        }}
+        onDeliverQuest={onDeliverQuest}
+        onSetReward={(id, reward) => {
+          const target = quests.find(q => q.id === id);
+          if (target) onQuestUpdate({ ...target, reward });
+        }}
+        onParticleBurst={triggerParticleBurst}
+      />
+
+      {/* Unlock toast */}
+      {unlockToast && (
+        <div
+          className="absolute top-4 left-1/2 transform -translate-x-1/2 bg-gray-900/95 rounded-lg px-5 py-3 z-50 border-2 flex items-center gap-3"
+          style={{ borderColor: unlockToast.color }}
+        >
+          <span className="text-3xl">{unlockToast.emoji}</span>
+          <div>
+            <div className="text-xs text-gray-400">New companion unlocked</div>
+            <div className="font-bold" style={{ color: unlockToast.color }}>
+              {unlockToast.name}
+            </div>
+            <div className="text-xs text-gray-500">{unlockToast.blurb}</div>
+          </div>
+        </div>
       )}
 
       {/* Dev Panel (Shift+D) */}

@@ -22,3 +22,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Quest test data (auto-saved)
+quest-data/*.json

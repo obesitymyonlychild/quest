@@ -25,7 +25,28 @@ export interface Quest {
   steps: QuestStep[];
   completedAt: string | null;        // ISO date when all steps completed
   lastStepCompletedAt: string | null; // ISO date of most recent step completion
+  deliveredAt: string | null;        // ISO date when delivered & archived as a trophy
 }
+
+export interface Companion {
+  id: string;     // stable slug, e.g. "ember-fox"
+  name: string;   // display name
+  emoji: string;  // simple glyph for roster/toast (no asset files needed)
+  blurb: string;  // one-line flavor text
+  color: string;  // hex string matching the neon palette
+}
+
+// Sequential unlock pool. The Nth lifetime step completion grants COMPANION_POOL[n-1].
+export const COMPANION_POOL: Companion[] = [
+  { id: 'ember-fox',   name: 'Ember',   emoji: '🦊',  blurb: 'A fox lit by neon dusk.',         color: '#ff6b6b' },
+  { id: 'glow-moth',   name: 'Lumen',   emoji: '🦋',  blurb: 'Wings that hum teal at night.',   color: '#14f195' },
+  { id: 'amber-owl',   name: 'Cinder',  emoji: '🦉',  blurb: 'Watches the dark, unblinking.',   color: '#fbbf24' },
+  { id: 'pixel-wolf',  name: 'Static',  emoji: '🐺',  blurb: 'Runs the ridgeline at dawn.',     color: '#4ecdc4' },
+  { id: 'violet-toad', name: 'Croak',   emoji: '🐸',  blurb: 'Glows purple in the marsh.',      color: '#a78bfa' },
+  { id: 'spark-hare',  name: 'Bolt',    emoji: '🐇',  blurb: 'Faster than your excuses.',       color: '#14f195' },
+  { id: 'coal-bear',   name: 'Smolder', emoji: '🐻',  blurb: 'Big, warm, dependable.',          color: '#ff6b6b' },
+  { id: 'neon-raven',  name: 'Vesper',  emoji: '🐦‍⬛', blurb: 'Carries messages between camps.', color: '#4ecdc4' },
+];
 
 export const STEP_TYPE_CONFIG: Record<StepType, { inWorldName: string; badgeColor: string }> = {
   action: { inWorldName: "Make the kill", badgeColor: "bg-coral" },

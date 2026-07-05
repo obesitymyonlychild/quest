@@ -1,26 +1,22 @@
 import { useState, useRef, useEffect } from 'react';
 import { Message, streamChatResponse, extractQuestFromMessage } from '../lib/claude';
 import { Quest } from '../types';
-import { loadQuest } from '../lib/storage';
 
 interface ChatInterfaceProps {
   apiKey: string;
+  activeQuest?: Quest | null;
   onQuestCreated: (quest: Quest) => void;
   onViewQuest?: () => void;
+  onSkip?: () => void;
 }
 
-export default function ChatInterface({ apiKey, onQuestCreated, onViewQuest }: ChatInterfaceProps) {
+export default function ChatInterface({ apiKey, activeQuest, onQuestCreated, onViewQuest, onSkip }: ChatInterfaceProps) {
   const [messages, setMessages] = useState<Message[]>([
     { role: 'assistant', content: "Something's been sitting on your chest. Tell me what it is." }
   ]);
   const [input, setInput] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
-  const [savedQuest, setSavedQuest] = useState<Quest | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    setSavedQuest(loadQuest());
-  }, []);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -78,11 +74,11 @@ export default function ChatInterface({ apiKey, onQuestCreated, onViewQuest }: C
 
   return (
     <div className="flex flex-col h-screen max-w-3xl mx-auto p-4">
-      {savedQuest && onViewQuest && (
+      {activeQuest && onViewQuest ? (
         <div className="mb-4 p-3 bg-gray-800 border border-teal rounded flex items-center justify-between">
           <div>
             <span className="text-teal font-bold">Active Quest:</span>{' '}
-            <span className="text-gray-300">{savedQuest.realTitle}</span>
+            <span className="text-gray-300">{activeQuest.realTitle}</span>
           </div>
           <button
             onClick={onViewQuest}
@@ -91,7 +87,16 @@ export default function ChatInterface({ apiKey, onQuestCreated, onViewQuest }: C
             View Quest
           </button>
         </div>
-      )}
+      ) : onSkip ? (
+        <div className="mb-4 flex justify-end">
+          <button
+            onClick={onSkip}
+            className="px-4 py-2 text-sm text-gray-400 hover:text-teal border border-gray-700 hover:border-teal rounded"
+          >
+            Skip — back to camp →
+          </button>
+        </div>
+      ) : null}
       <div className="flex-1 overflow-y-auto mb-4 space-y-4">
         {messages.map((msg, idx) => (
           <div

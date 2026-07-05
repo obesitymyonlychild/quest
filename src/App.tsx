@@ -1,8 +1,18 @@
 import { useState, useEffect } from 'react';
 import ChatInterface from './components/ChatInterface';
 import Campsite from './components/Campsite';
+import { DevPanel } from './components/DevPanel';
 import { Quest } from './types';
-import { saveQuest, loadQuest, clearQuest, saveApiKey, loadApiKey } from './lib/storage';
+import {
+  loadQuests,
+  addQuest,
+  upsertQuest,
+  deleteQuest,
+  getActiveQuestId,
+  setActiveQuestId as persistActiveQuestId,
+  saveApiKey,
+  loadApiKey,
+} from './lib/storage';
 
 type Screen = 'api-key' | 'chat' | 'campsite';
 
@@ -10,24 +20,51 @@ function App() {
   const [screen, setScreen] = useState<Screen>('api-key');
   const [apiKey, setApiKey] = useState('');
   const [apiKeyInput, setApiKeyInput] = useState('');
-  const [quest, setQuest] = useState<Quest | null>(null);
+  const [quests, setQuests] = useState<Quest[]>([]);
+  const [activeQuestId, setActiveQuestId] = useState<string | null>(null);
+  const [showDevPanel, setShowDevPanel] = useState(false);
+
+  const activeQuest = quests.find(q => q.id === activeQuestId) ?? null;
 
   useEffect(() => {
-    // Load saved API key and quest on mount
+    // Load saved API key and quests on mount (migrates legacy single quest)
     const savedKey = loadApiKey();
-    const savedQuest = loadQuest();
+    const allQuests = loadQuests();
+    setQuests(allQuests);
 
-    if (savedQuest) {
-      setQuest(savedQuest);
-      setScreen('campsite');
-      if (savedKey) {
-        setApiKey(savedKey);
-      }
-    } else if (savedKey) {
+    // Fallback must skip delivered quests — otherwise a collected trophy
+    // gets resurrected as the active quest on reload.
+    const restoredActive = getActiveQuestId() ?? allQuests.find(q => !q.deliveredAt)?.id ?? null;
+    setActiveQuestId(restoredActive);
+
+    if (savedKey) {
       setApiKey(savedKey);
       setApiKeyInput(savedKey);
+    }
+
+    // Land on the campsite whenever the user has any quest history (even if
+    // everything is delivered — the empty hook is the home screen). Chat is
+    // only the landing screen for brand-new users with no quests yet.
+    if (restoredActive || allQuests.length > 0) {
+      setScreen('campsite');
+    } else if (savedKey) {
       setScreen('chat');
     }
+  }, []);
+
+  // Shift+D keyboard shortcut for dev panel
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement;
+      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT' || target.isContentEditable) return;
+      if (e.shiftKey && e.key === 'D') {
+        e.preventDefault();
+        setShowDevPanel(prev => !prev);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
   const handleApiKeySubmit = () => {
@@ -39,24 +76,58 @@ function App() {
   };
 
   const handleQuestCreated = (newQuest: Quest) => {
-    setQuest(newQuest);
-    saveQuest(newQuest);
+    setQuests(addQuest(newQuest));
+    setActiveQuestId(newQuest.id);
+    persistActiveQuestId(newQuest.id);
     setScreen('campsite');
   };
 
   const handleQuestUpdate = (updatedQuest: Quest) => {
-    setQuest(updatedQuest);
+    setQuests(upsertQuest(updatedQuest));
+  };
+
+  const handleSelectQuest = (id: string) => {
+    setActiveQuestId(id);
+    persistActiveQuestId(id);
+  };
+
+  const handleDeliverQuest = (id: string) => {
+    // Read from storage, not state: the reward committed a moment earlier in
+    // the same click hasn't landed in the quests state yet, and building the
+    // delivered quest from stale state would overwrite (lose) that reward.
+    const target = loadQuests().find(q => q.id === id);
+    if (!target) return;
+
+    const now = new Date().toISOString();
+    const delivered: Quest = {
+      ...target,
+      deliveredAt: now,
+      completedAt: target.completedAt ?? now,
+    };
+    const all = upsertQuest(delivered);
+    setQuests(all);
+
+    // Re-select an active quest among the non-delivered ones. Stay on the
+    // campsite either way — with no quest it shows the empty hook, and chat
+    // only opens when the user taps it to start a new quest.
+    const nextActive = all.find(q => !q.deliveredAt)?.id ?? null;
+    setActiveQuestId(nextActive);
+    persistActiveQuestId(nextActive);
   };
 
   const handleBackToChat = () => {
     setScreen('chat');
   };
 
-  const handleDeleteQuest = () => {
+  const handleDeleteQuest = (id: string) => {
     if (confirm('Are you sure you want to delete this quest? This cannot be undone.')) {
-      clearQuest();
-      setQuest(null);
-      setScreen('chat');
+      const all = deleteQuest(id);
+      setQuests(all);
+      if (activeQuestId === id) {
+        const nextActive = all.find(q => !q.deliveredAt)?.id ?? null;
+        setActiveQuestId(nextActive);
+        persistActiveQuestId(nextActive);
+      }
     }
   };
 
@@ -104,28 +175,60 @@ function App() {
     );
   }
 
+  const handleDataChange = () => {
+    const allQuests = loadQuests();
+    setQuests(allQuests);
+    const restoredActive = getActiveQuestId();
+    if (restoredActive && !allQuests.find(q => q.id === restoredActive)) {
+      const nextActive = allQuests.find(q => !q.deliveredAt)?.id ?? null;
+      setActiveQuestId(nextActive);
+      persistActiveQuestId(nextActive);
+    }
+  };
+
   if (screen === 'chat') {
     return (
-      <ChatInterface
-        apiKey={apiKey}
-        onQuestCreated={handleQuestCreated}
-        onViewQuest={quest ? () => setScreen('campsite') : undefined}
-      />
+      <>
+        <ChatInterface
+          apiKey={apiKey}
+          activeQuest={activeQuest}
+          onQuestCreated={handleQuestCreated}
+          onViewQuest={activeQuest ? () => setScreen('campsite') : undefined}
+          onSkip={() => setScreen('campsite')}
+        />
+        {showDevPanel && (
+          <DevPanel onClose={() => setShowDevPanel(false)} onDataChange={handleDataChange} />
+        )}
+      </>
     );
   }
 
   if (screen === 'campsite') {
     return (
-      <Campsite
-        quest={quest}
-        onQuestUpdate={handleQuestUpdate}
-        onBackToChat={handleBackToChat}
-        onDeleteQuest={handleDeleteQuest}
-      />
+      <>
+        <Campsite
+          quest={activeQuest}
+          quests={quests}
+          onQuestUpdate={handleQuestUpdate}
+          onSelectQuest={handleSelectQuest}
+          onDeliverQuest={handleDeliverQuest}
+          onBackToChat={handleBackToChat}
+          onDeleteQuest={handleDeleteQuest}
+        />
+        {showDevPanel && (
+          <DevPanel onClose={() => setShowDevPanel(false)} onDataChange={handleDataChange} />
+        )}
+      </>
     );
   }
 
-  return null;
+  return (
+    <>
+      {showDevPanel && (
+        <DevPanel onClose={() => setShowDevPanel(false)} onDataChange={handleDataChange} />
+      )}
+    </>
+  );
 }
 
 export default App;

@@ -377,3 +377,194 @@ Open the app. The campsite loads. Without touching anything, something moves —
 You close the app and kind of want to open it again.
 
 That's stage 2 done.
+
+# SPEC.md — Stage 3: Completion Drops & Character Unlocks
+
+> Stage-gated build doc. Same shape as Stage 1 / Stage 2. Drop this in the repo and hand it to Claude Code.
+> Filenames/identifiers below are **suggested** — map them to whatever Stage 1/2 already named.
+
+---
+
+## 0. Assumptions to confirm before running (2-min read)
+
+- **Character rendering = flat vector**, animated procedurally in Pixi (per the `campsite-characters` prototype). This is the committed choice; painterly stays in the *background/lighting* only. _(Flip this line if you want raster sprites instead — it changes §5 and §8.)_
+- Stage 2 already provides a mounted Pixi **`Campsite`** scene: a shared ticker, layered containers (bg / fire / characters / fx / ui), and reactive environment states.
+- Persistence exists from Stage 1 (localStorage or IndexedDB) and holds the quest list + completion history.
+- Active quests are capped at 1–2 and each quest carries a pre-committed reward field.
+
+---
+
+## 1. Goal
+
+When a quest is completed, **the camp reacts**: a reward *drop* plays at the fire, and if that completion crosses an unlock threshold, a **new character arrives** and becomes a permanent camp resident. This is the payoff loop — the visible reason finishing a quest feels good.
+
+---
+
+## 2. Scope
+
+**In:** reward engine (pure logic) · character registry (data-driven) · completion-drop animation · character arrival/unlock animation · camp roster persistence · dev test harness.
+
+**Out (→ Stage 4):** patrol nudges · real-world reward *redemption* flow (Stage 3 only *represents* the reward in-camp) · PWA / iPhone install · full character-reaction system beyond idle + arrival.
+
+---
+
+## 3. Architecture — hard boundary between logic and presentation
+
+This split is the whole point of the stage; it's what makes the agent able to verify its own work.
+
+**Layer A — Reward engine** (`rewardEngine.ts`) — **pure**. No Pixi, no DOM, no timers.
+- Input: a completion event + a progress snapshot.
+- Output: `DropResult` — an ordered list of effects the camp should play.
+- 100% unit-testable. **This is the verification anchor.**
+
+**Layer B — Presentation** (`CampDrops.ts`, Pixi) — consumes a `DropResult` and plays it.
+- Makes **zero** business decisions. It only renders what the engine returned.
+
+**State store** (`campState.ts`) sits between them: progress, `unlocked[]`, `pendingDrops[]`, persistence.
+
+```
+quest complete ──▶ campState ──▶ rewardEngine(event, progress) ──▶ DropResult
+                                                                      │
+                                                          CampDrops.play(DropResult)
+                                                                      │
+                                                          mutate scene + persist
+```
+
+---
+
+## 4. Data model
+
+```ts
+type CharacterDef = {
+  id: string;                 // "imp" | "fuzz" | ...
+  name: string;               // "The Imp"
+  tag: string;                // "quest guide" | "companion drop"
+  unlock: (p: ProgressState) => boolean;  // predicate — data, not code branches
+  slot: { x: number; y: number };         // camp position
+  asset: string;              // vector component / sprite id
+  idle: string;               // idle animation id
+};
+
+type ProgressState = {
+  questsCompleted: number;
+  currentStreak: number;
+  completedIds: string[];     // for idempotency
+};
+
+type DropEffect =
+  | { type: "loot"; rewardLabel: string }
+  | { type: "streak"; value: number }
+  | { type: "unlock"; characterId: string };
+
+type DropResult = { effects: DropEffect[] };
+
+type CampState = {
+  progress: ProgressState;
+  unlocked: string[];         // character ids present at camp
+  pendingDrops: DropResult[]; // queued, survives reload
+};
+```
+
+---
+
+## 5. Character registry (data-driven)
+
+One array; **adding a character = adding an entry, not writing code.**
+
+```ts
+export const CHARACTERS: CharacterDef[] = [
+  { id: "imp",  name: "The Imp", tag: "quest guide",
+    unlock: () => true,                          // always present
+    slot: { x: 520, y: 560 }, asset: "imp",  idle: "breathe" },
+
+  { id: "fuzz", name: "Fuzz",    tag: "companion drop",
+    unlock: p => p.questsCompleted >= 3,         // first real unlock
+    slot: { x: 760, y: 585 }, asset: "fuzz", idle: "bob" },
+];
+```
+
+Thresholds are placeholders — tune at the taste checkpoint (§7).
+
+---
+
+## 6. Completion-drop sequence (the moment)
+
+1. Quest marked complete → `campState` records it (guard against double-fire via `completedIds`).
+2. `rewardEngine(event, progress)` returns a `DropResult`.
+3. **Presentation plays, in order:**
+   a. Fire flares (amber pulse) + loot *poof* at the fire, reward label rises and fades.
+   b. Streak counter ticks up.
+   c. **If an `unlock` effect exists:** brief **cyan flash** → character **bounces/squashes** into its camp slot → nameplate reveals → roster card flips `□ → ■`.
+4. Persist `campState`.
+
+**Feel:** cartoon squash-and-stretch, amber sparkle on loot, cyan flash reserved for unlocks only. Matches the prototype's palette and motion.
+
+---
+
+## 7. Taste checkpoints (stop and get a human eye here)
+
+- **Drop juice** — does finishing *feel* like a reward, or like a log line?
+- **Arrival choreography** — the bounce-in is the one memorable beat; get it right.
+- **Unlock thresholds** — too low = cheap, too high = never seen. Tune live.
+
+---
+
+## 8. Verification loop (bake this into the agent's cycle)
+
+- **Unit tests on `rewardEngine`:** every unlock threshold; streak edge cases; **idempotency** (re-completing the same quest id fires nothing new); ordering of effects.
+- **Isolated test scene** (`/dev/camp-test`): dev-only buttons — `simulateCompletion()`, `forceUnlock(id)`, `replayLastDrop()` — trigger every animation **without a real quest**.
+- **State assertions:** after a simulated completion, assert `unlocked` contains the expected id and `pendingDrops` is drained.
+- **Adversarial-review subagent:** prompt it to *"find a path where a drop double-fires, a character unlocks twice, or an animation plays with no matching state change."* Fix what it finds before moving on.
+
+---
+
+## 9. Deliverables checklist
+
+- [ ] `rewardEngine.ts` + unit tests (pure, no Pixi/DOM imports)
+- [ ] `characterRegistry.ts` (≥2: `imp` resident, `fuzz` unlockable)
+- [ ] `campState.ts` store + persistence (survives reload)
+- [ ] `CampDrops.ts` presentation layer
+- [ ] drop animation + unlock/arrival animation
+- [ ] roster UI sync (`□ / ■`, mono, cyan/amber)
+- [ ] `/dev/camp-test` harness scene
+- [ ] green unit tests + passing state assertions
+
+---
+
+## 10. Acceptance criteria
+
+- Completing a quest plays **exactly one** drop.
+- Crossing a threshold unlocks **exactly once** and **persists across reload**.
+- `rewardEngine` imports **zero** Pixi/DOM.
+- The test scene can trigger **every** animation with no real quest.
+- Reload restores all unlocked characters at their correct slots.
+
+---
+
+## 11. Aesthetic lock (from the prototype)
+
+Dark night-jungle ground · warm fire-glow pool · **cyan + amber** accents · monospace HUD/nameplates · **flat vector** characters with clean dark outlines · cartoon squash/bounce motion · painterly detail limited to background + lighting.
+
+---
+
+## 12. Claude Code kickoff prompt (paste-ready)
+
+```
+Read SPEC-stage3.md and CLAUDE.md fully before writing code.
+
+Plan first: post a short build plan (files, order, test strategy) and STOP for my
+review before implementing.
+
+Build order:
+1. rewardEngine.ts as a pure module + its unit tests. Get tests green before any Pixi.
+2. campState store + persistence.
+3. characterRegistry.
+4. CampDrops presentation layer wired to the existing Stage 2 Campsite scene.
+5. /dev/camp-test harness with simulateCompletion / forceUnlock / replayLastDrop.
+
+Rules:
+- Keep rewardEngine free of Pixi/DOM. If you reach for them there, stop and rethink.
+- After each file, run its tests/assertions before moving on (verification loop).
+- When done, run the adversarial-review pass from §8 and fix findings.
+- Pause at the §7 taste checkpoints — don't final-polish animation feel without me.
+```
